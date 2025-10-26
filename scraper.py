@@ -80,6 +80,11 @@ def crawl(start_url, max_depth=3):
     if bucket_match and s3_match:
         all_buckets[s3_match.group(1)] = [bucket_match.group(1)]
     # print results
+    
+    return all_buckets
+
+
+def print_buckets(all_buckets):
     print("\n--- SUMMARY ---")
     if all_buckets:
         for svc, names in all_buckets.items():
@@ -88,13 +93,9 @@ def crawl(start_url, max_depth=3):
                 print(f"  - {n}")
     else:
         print("No buckets found.")
-    return all_buckets
-
-
-
 
 if __name__ == "__main__":
-    crawl(url, MAX_DEPTH)
-
+    all_buckets = crawl(url, MAX_DEPTH)
+    print_buckets(all_buckets)
 
 
