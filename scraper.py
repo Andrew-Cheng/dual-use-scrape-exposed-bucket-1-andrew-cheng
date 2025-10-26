@@ -1,36 +1,12 @@
 import re
 import requests
 from bs4 import BeautifulSoup
-
+from collections import deque
 # --- CONFIG ---
+MAX_DEPTH = 3
+TIMEOUT = 10
 url = "http://host.docker.internal:8000"  # target page
 urlconfig = "http://host.docker.internal:8000/config.js"
-# --- FETCH PAGE ---
-try:
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    html = response.text
-    response2 = requests.get(urlconfig,timeout = 10)
-    response2.raise_for_status()
-    js = response2.text
-except Exception as e:
-    print(f"[!] Error fetching page: {e}")
-    exit(1)
-
-# print(js)
-
-# --- PARSE TEXT (optional HTML cleanup) ---
-soup = BeautifulSoup(html, "html.parser")
-text = soup.get_text(" ", strip=True)
-scripts = soup.find_all('script', src=True)
-
-for script in scripts: 
-    src = script.get('src')
-    if 'config' in src: 
-        config_url = 'http://host.docker.internal:8000/{src}'
-        config_response = requests.get(config_url)
-        config_content = config_response.text
-
 # --- REGEX PATTERNS ---
 patterns = {
     "AWS S3": re.compile(
@@ -46,25 +22,79 @@ patterns = {
     "GCS URI": re.compile(r"gs://([\w.\-]+)"),
 }
 
+def fetch_page(url):
+    try:
+        resp = requests.get(url, timeout=TIMEOUT)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        print(f"[!] Failed to fetch {url}: {e}")
+        return ""
 
-# --- EXTRACT BUCKETS ---
-found = {}
-for name, pattern in patterns.items():
-    matches = pattern.findall(html)
-    if matches:
-        found[name] = list(set(matches))
+def extract_links(html, base_url):
+    soup = BeautifulSoup(html, "html.parser")
+    links = set()
+    for a in soup.find_all("a", href=True):
+        if a['href'][0] == '/':
+            links.add(url  + a['href'])
+    return links
 
-bucket_match = re.search(r'bucket:\s*"([^"]+)"',js)
-s3_match = re.search(r's3:\s*"([^"]+)"',js)
 
-if bucket_match and s3_match:
-    found[s3_match.group(1)] = [bucket_match.group(1)]
-# --- DISPLAY RESULTS ---
-if found:
-    print("\n[+] Possible Bucket Endpoints Found:")
-    for service, buckets in found.items():
-        print(f"\n{service}:")
-        for b in buckets:
-            print(f"  - {b}")
-else:
-    print("[-] No bucket endpoints found.")
+def extract_buckets(text):
+    found = {}
+    for service, pattern in patterns.items():
+        matches = pattern.findall(text)
+        if matches:
+            found[service] = list(set(matches))
+    return found
+def crawl(start_url, max_depth=3):
+    visited = set()
+    queue = deque([(start_url, 0)])
+    all_buckets = {}
+
+    while queue:
+        url, depth = queue.popleft()
+        if url in visited or depth > max_depth:
+            continue
+        visited.add(url)
+
+        print(f"\n[+] Crawling (depth {depth}): {url}")
+        html = fetch_page(url)
+        if not html:
+            continue
+
+        # extract buckets
+        buckets = extract_buckets(html)
+        for k, v in buckets.items():
+            all_buckets.setdefault(k, set()).update(v)
+
+        # extract links if not at max depth
+        if depth < max_depth:
+            for link in extract_links(html, url):
+                if link not in visited:
+                    queue.append((link, depth + 1))
+    js = fetch_page(urlconfig)
+    bucket_match = re.search(r'bucket:\s*"([^"]+)"',js)
+    s3_match = re.search(r's3:\s*"([^"]+)"',js)
+
+    if bucket_match and s3_match:
+        all_buckets[s3_match.group(1)] = [bucket_match.group(1)]
+    # print results
+    print("\n--- SUMMARY ---")
+    if all_buckets:
+        for svc, names in all_buckets.items():
+            print(f"\n{svc}:")
+            for n in sorted(names):
+                print(f"  - {n}")
+    else:
+        print("No buckets found.")
+    return all_buckets
+
+
+
+
+if __name__ == "__main__":
+    crawl(url, MAX_DEPTH)
+
+
+
